@@ -1,0 +1,68 @@
+#!/bin/bash
+
+folder=$1
+serial=$2
+
+imgFile=./2023-10-10-raspios-bookworm-arm64-lite.img 
+imgMount=./tmp_imgMount
+tftpboot=/var/lib/tftpboot
+
+help() {
+	echo createBaseInstall {newImageName} {serialNumber}
+	echo
+	echo - newImageName - Whatever you want to cally your new image
+	echo
+	echo - serialNumber - the code after 28: when running the following command on the Pi
+	echo 	vcgencmd otp_dump | grep '28:'
+
+	exit
+}
+
+if [ "$folder" == "" ]; then
+	help && exit 1
+fi
+if [ "$serial" == "" ]; then
+	help && exit 1
+fi
+
+
+
+loop=`kpartx -a -v $imgFile | sed -n  's/add map \(.*\)p1.*/\1/p'`
+echo Loop : $loop
+
+mkdir -p $imgMount/root
+mkdir -p $imgMount/boot
+mount /dev/mapper/"$loop"p1 $imgMount/boot/
+mount /dev/mapper/"$loop"p2 $imgMount/root/
+
+mkdir -p "$folder"/root/
+mkdir -p "$folder"/boot/
+
+echo Copying over BOOT
+rsync -ah --info=progress2 $imgMount/boot/* "$folder"/boot/
+echo Copying over ROOT
+rsync -ag --info=progress2 $imgMount/root "$folder"/
+
+echo Setting up cmdline.txt
+echo dwc_otg.lpm_enable=0 console=serial0,115200 console=tty1 root=/dev/nfs nfsroot=10.0.0.4:$tftpboot/$folder/root,vers=3,tcp rw ip=dhcp rootwait elevator=deadline cgroup_enable=memory cgroup_memory=1 > "$folder"/boot/cmdline.txt
+
+echo Modifying fstab
+echo "proc            /proc           proc    defaults          0       0" > $folder/root/etc/fstab
+echo "#PARTUUID=f6a7c4bd-01  /boot/firmware  vfat    defaults          0       2" >> $folder/root/etc/fstab
+echo "#PARTUUID=f6a7c4bd-02  /               ext4    defaults,noatime  0       1" >> $folder/root/etc/fstab
+
+
+echo Tagging root folder with ID $folder
+touch "$folder"/root/pi_id_$serial
+
+echo Enabling SSH on boot
+echo ssh > "$folder"/boot/ssh
+
+echo Linking serial number $serial to folder $folder/boot/
+ln -s $folder/boot/ $serial
+
+umount $imgMount/*
+rmdir $imgMount/boot
+rmdir $imgMount/root
+rmdir $imgMount
+kpartx -d -v $imgFile
